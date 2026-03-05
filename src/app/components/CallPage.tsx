@@ -87,6 +87,8 @@ export default function CallPage({ initialToken }: Props) {
     const waveAnimRef = useRef<number | null>(null);
     const durationRef = useRef<NodeJS.Timeout | null>(null);
     const wasInCallRef = useRef(false);
+    // FIX: ref para el timer de onDisconnected — evita terminar la llamada durante reconexión de WebSocket
+    const disconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
     // state
     const [generatedToken, setGeneratedToken] = useState("");
@@ -106,9 +108,7 @@ export default function CallPage({ initialToken }: Props) {
     const isInCall = status === "inCall";
     const showControls = isInCall;
 
-
     // ── Init ──────────────────────────────────────────────────────────────────
-
 
     useEffect(() => {
         if (status !== "inCall") {
@@ -124,10 +124,12 @@ export default function CallPage({ initialToken }: Props) {
         }
     }, []);
 
-    // Limpieza al desmontar
+    // FIX: Destroy() en lugar de dispose() — dispose() no existe en la librería,
+    // la instancia anterior quedaba viva con su WebSocket abierto
     useEffect(() => {
         return () => {
-            callinkRef.current?.dispose?.();
+            if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+            callinkRef.current?.Destroy?.();
             callinkRef.current = null;
         };
     }, []);
@@ -247,11 +249,11 @@ export default function CallPage({ initialToken }: Props) {
     // ── Callink API ───────────────────────────────────────────────────────────
 
     const initializeCallink = async (token: string) => {
-        await callinkRef.current?.dispose?.();
+        // FIX: Destroy() en lugar de dispose() que no existe en la librería
+        await callinkRef.current?.Destroy?.();
         callinkRef.current = null;
         wasInCallRef.current = false;
         setStatus("connecting");
-        //showToast("Conectando al servidor...", "info", "🔗");
 
         callinkRef.current = new Callink({
             SignalingWebsocketURL: "wss://callink-signaling-0-dev.sendiu.net",
@@ -272,7 +274,7 @@ export default function CallPage({ initialToken }: Props) {
                 },
                 // Se dispara cuando ambos participantes se han unido a la llamada y está activa
                 onOpen: () => {
-                    stopRinging(); //ambos conectados, detener tono
+                    stopRinging();
                     setStatus("inCall");
                 },
                 // Se dispara cuando alguno contesta y se activa el stream de audio
@@ -281,7 +283,7 @@ export default function CallPage({ initialToken }: Props) {
                     setStatus("inCall");
                     startAudioAnalysis(stream);
                 },
-                // Se dispara cada vez que llega una nueva pista de audio (puede ser varias veces por cambios en la conexión)
+                // Se dispara cada vez que llega una nueva pista de audio
                 onTrack: (event: RTCTrackEvent) => {
                     if (event.track.kind !== "audio") return;
                     if (audioRef.current) {
@@ -289,24 +291,32 @@ export default function CallPage({ initialToken }: Props) {
                         audioRef.current.play().catch(console.error);
                     }
                 },
-                // Se dispara cuando estas conectado pero no en llamada y la seccion expira (sin respuesta)
+                // FIX: onDisconnected también se dispara durante reconexión automática del WebSocket.
+                // Se agrega delay de 4s para dar tiempo a la reconexión antes de terminar la llamada.
                 onDisconnected: () => {
                     if (!wasInCallRef.current) return;
-                    wasInCallRef.current = false;
-                    setStatus("ended");
-                    showToast("La sesión ha expirado", "warning", "⌛");
-                    cleanupAudio();
+                    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+                    disconnectTimerRef.current = setTimeout(() => {
+                        if (callinkRef.current?.callService?.HasActiveCall?.()) return;
+                        if (!wasInCallRef.current) return;
+                        wasInCallRef.current = false;
+                        setStatus("ended");
+                        showToast("La sesión ha expirado", "warning", "⌛");
+                        cleanupAudio();
+                    }, 4000);
                 },
-                // Se dispara cuando la llamada se termina por uno de los participantes(al colgar,cerrar navegador,perder conexión, etc)
+                // Se dispara cuando la llamada se termina por uno de los participantes — cancela el timer
                 onClosed: () => {
+                    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
                     if (!wasInCallRef.current) return;
                     wasInCallRef.current = false;
                     setStatus("ended");
-                     showToast("El otro participante colgó", "warning", "📴");
+                    showToast("El otro participante colgó", "warning", "📴");
                     cleanupAudio();
                 },
-                //se dispara cuando alguno se une a la llamada pero el otro no y expira el tiempo de espera
+                // Se dispara cuando alguno se une pero el otro no responde a tiempo
                 onNoAnswer: () => {
+                    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
                     stopRinging();
                     wasInCallRef.current = false;
                     setStatus("ended");
@@ -319,7 +329,7 @@ export default function CallPage({ initialToken }: Props) {
 
     // ── Actions ───────────────────────────────────────────────────────────────
 
-    // El emisor genera un nuevo enlace y token al hacer click (el receptor ya tiene el token en la URL)
+    // El emisor genera un nuevo enlace y token al hacer click
     const handleCreateCallLink = async () => {
         try {
             setStatus("generating");
@@ -331,17 +341,18 @@ export default function CallPage({ initialToken }: Props) {
             setGeneratedToken(token);
             setGeneratedLink(link);
             await initializeCallink(token);
-            //  showToast("Enlace creado. ¡Compártelo!", "success", "🔗");
         } catch {
             setStatus("error");
             showToast("Error generando el enlace", "error", "❌");
         }
     };
 
-    // El emisor puede resetear todo para generar un nuevo enlace, el receptor tendría que recargar la página con un nuevo token
+    // El emisor puede resetear todo para generar un nuevo enlace
     const handleReset = async () => {
         setIsResetting(true);
-        await callinkRef.current?.dispose?.();
+        if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+        // FIX: Destroy() en lugar de dispose()
+        await callinkRef.current?.Destroy?.();
         callinkRef.current = null;
         wasInCallRef.current = false;
         cleanupAudio();
@@ -354,7 +365,7 @@ export default function CallPage({ initialToken }: Props) {
         setIsResetting(false);
     };
 
-    // Tanto el emisor como el receptor pueden iniciar la llamada (el emisor después de generar el enlace, el receptor después de conectarse)
+    // Tanto el emisor como el receptor pueden iniciar la llamada
     const handleStartCall = async () => {
         const token = initialToken || generatedToken;
 
@@ -369,59 +380,40 @@ export default function CallPage({ initialToken }: Props) {
         }
 
         try {
-
-            // const hasActive = await callinkRef.current?.callService?.HasActiveCall?.();
-            // if (hasActive) {
-            //     showToast("Ya hay una llamada activa", "info", "📞");
-            //     return;
-            // }
-
             await callinkRef.current.Call(clientID, token);
             showToast(
                 isReceiver ? "Te uniste a la llamada" : "Llamando...",
                 "info",
                 "📲"
             );
-
         } catch (error: any) {
-
-            //Usuario denegó el micrófono
             if (error?.name === "NotAllowedError") {
-                showToast(
-                    "Debes permitir el micrófono para realizar la llamada",
-                    "error",
-                    "🎤"
-                );
+                showToast("Debes permitir el micrófono para realizar la llamada", "error", "🎤");
                 return;
             }
-
-            // No hay micrófono disponible
             if (error?.name === "NotFoundError") {
-                showToast(
-                    "No se detectó ningún micrófono en el dispositivo",
-                    "error",
-                    "🎤"
-                );
+                showToast("No se detectó ningún micrófono en el dispositivo", "error", "🎤");
                 return;
             }
         }
     };
 
-
     // Colgar la llamada
     const handleHangUp = async () => {
         if (!callinkRef.current) return;
-        stopRinging(); // detiene el tono si se cuelga mientras llama
+        if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
+        stopRinging();
         wasInCallRef.current = false;
         try { await callinkRef.current.HangUp(); } catch (_) { }
-        await callinkRef.current?.dispose?.();
+        // FIX: Destroy() en lugar de dispose()
+        await callinkRef.current?.Destroy?.();
         callinkRef.current = null;
         setStatus("ended");
         showToast("Llamada finalizada", "info", "👋");
         cleanupAudio();
     };
 
-    // Silenciarse el microfono, lo que también reproduce música de espera para el otro participante
+    // Silenciar el micrófono, también reproduce música de espera para el otro participante
     const handleToggleMute = () => {
         if (!callinkRef.current) return;
         if (isMuted) {
@@ -467,10 +459,12 @@ export default function CallPage({ initialToken }: Props) {
 
     return (
         <>
+
+        <h1>fixed testing</h1>
             {/* Audio de la llamada */}
             <audio ref={audioRef} autoPlay playsInline className="hidden" />
 
-            {/* Audio del tono de llamada — solo suena localmente para el emisor */}
+            {/* Audio del tono de llamada */}
             <audio
                 ref={ringAudioRef}
                 src="https://dl.espressif.com/dl/audio/gs-16b-2c-44100hz.mp3"
@@ -687,7 +681,6 @@ export default function CallPage({ initialToken }: Props) {
                                     </Button>
                                 )}
 
-                                {/* Share row — oculto en ended para no mostrar enlace obsoleto */}
                                 {generatedToken && status !== "ended" && (
                                     <div className="flex flex-col gap-3">
                                         <span className="text-[0.72rem] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
