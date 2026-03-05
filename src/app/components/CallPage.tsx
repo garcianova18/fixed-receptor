@@ -4,7 +4,7 @@
 import "@/app/styles/Call.css";
 import { useEffect, useRef, useState, useCallback } from "react";
 import * as CallinkModule from "callink";
-import  createLink  from "@/app/services/sendiu-callink-api";
+import createLink from "@/app/services/sendiu-callink-api";
 import { IconButton, Tooltip, Chip, Divider, Button, CircularProgress } from "@mui/material";
 import {
     Mic as MicIcon,
@@ -62,7 +62,7 @@ const STATUS_CONFIG: Record<CallStatus, { label: string; color: string }> = {
 const BUSY_STATUSES: CallStatus[] = ["generating", "connecting", "ringing", "inCall", "ended"];
 
 //no bloquear el botón reset de colgar si esta en uno de estos estados
-const BUSY_HANG: CallStatus[] = [ "inCall", "connecting", "ringing"];
+const BUSY_HANG: CallStatus[] = ["inCall", "connecting", "ringing"];
 
 // ── Hold Music ────────────────────────────────────────────────────────────────
 const HOLD_MUSIC_OPTIONS = [
@@ -266,8 +266,17 @@ export default function CallPage({ initialToken }: Props) {
                 // Se dispara cuando se establece la conexión con el servidor, pero antes de iniciar cualquier llamada
                 onConnected: () => {
                     setStatus("connected");
+
+                    // Si es emisor, unirse a la sala automáticamente
+                    // así siempre llega antes que el receptor
+                    // if (!isReceiver) {
+                    //     const token = generatedToken || initialToken;
+                    //     if (token && callinkRef.current) {
+                    //         callinkRef.current.Call(clientID, token);
+                    //     }
+                    // }
                 },
-                 // Se dispara cuando alguno se une a la llamada y espera que el otro se una
+                // Se dispara cuando alguno se une a la llamada y espera que el otro se una
                 onRinging: () => {
                     setStatus("ringing");
                     startRinging();
@@ -460,7 +469,7 @@ export default function CallPage({ initialToken }: Props) {
     return (
         <>
 
-        <h1>fixed testing</h1>
+            <h1>fixed testing</h1>
             {/* Audio de la llamada */}
             <audio ref={audioRef} autoPlay playsInline className="hidden" />
 
